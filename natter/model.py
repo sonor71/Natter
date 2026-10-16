@@ -4,6 +4,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .sampling import block_repeated_ngrams, nucleus_filter, penalize_repeated_tokens
+
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-5):
@@ -111,29 +113,63 @@ class NatterTransformer(nn.Module):
         return logits, loss
 
     @torch.inference_mode()
-    def generate(self, prefix, max_new_tokens=120, temperature=0.8, top_k=40, eos_id=None, forbidden_token_ids=None):
+    def generate(
+        self, prefix, max_new_tokens=120, temperature=0.8,
+        top_k=40, eos_id=None, forbidden_token_ids=None,
+        repetition_penalty=1.0, no_repeat_ngram_size=0, top_p=1.0,
+    ):
+        """Autoregressively generate text without modifying the checkpoint.
+
+        Repetition controls affect only newly generated tokens, not the prompt.
+        Defaults preserve the previous implementation's decoding behavior.
+        """
         self.eval()
         if prefix.ndim != 2 or prefix.shape[1] < 1:
-            raise ValueError('prefix must have shape (batch, length >= 1)')
+            raise ValueError("prefix must have shape (batch, length >= 1)")
+        if max_new_tokens < 0:
+            raise ValueError("max_new_tokens must be >= 0")
+        if repetition_penalty < 1:
+            raise ValueError("repetition_penalty must be >= 1")
+        if no_repeat_ngram_size not in (0,) and no_repeat_ngram_size < 2:
+            raise ValueError("no_repeat_ngram_size must be 0 or >= 2")
+        if not 0 < top_p <= 1:
+            raise ValueError("top_p must be within (0, 1]")
+        if top_k is not None and top_k < 0:
+            raise ValueError("top_k must be >= 0")
+
         result = prefix
+        prefix_len = prefix.shape[1]
         vocab = self.embed.num_embeddings
-        forbidden = sorted({int(i) for i in (forbidden_token_ids or ()) if 0 <= int(i) < vocab})
+        forbidden = sorted({
+            int(i) for i in (forbidden_token_ids or ()) if 0 <= int(i) < vocab
+        })
         if len(forbidden) == vocab:
-            raise ValueError('All vocabulary tokens are forbidden')
+            raise ValueError("All vocabulary tokens are forbidden")
+
         for _ in range(max_new_tokens):
             logits, _ = self(result[:, -self.context_size:])
-            logits = logits[:, -1].float()
+            logits = logits[:, -1].float().clone()
             if forbidden:
-                logits[:, forbidden] = -float('inf')
+                logits[:, forbidden] = -float("inf")
+
+            generated = result[:, prefix_len:]
+            penalize_repeated_tokens(logits, generated, repetition_penalty)
+            block_repeated_ngrams(logits, generated, no_repeat_ngram_size)
+
+            if not torch.isfinite(logits).any(dim=-1).all():
+                raise RuntimeError("No valid next tokens after decoding filters")
+
             if temperature <= 0:
                 nxt = logits.argmax(-1, keepdim=True)
             else:
-                logits = logits / max(temperature, 1e-5)
+                logits = logits / temperature
                 if top_k is not None and top_k > 0:
                     k = min(top_k, logits.shape[-1])
                     threshold = torch.topk(logits, k).values[:, -1, None]
-                    logits = logits.masked_fill(logits < threshold, -float('inf'))
-                nxt = torch.multinomial(F.softmax(logits, dim=-1), 1)
+                    logits = logits.masked_fill(logits < threshold, -float("inf"))
+                logits = nucleus_filter(logits, top_p)
+                probs = F.softmax(logits, dim=-1)
+                nxt = torch.multinomial(probs, 1)
             result = torch.cat((result, nxt), dim=1)
             if eos_id is not None and bool((nxt == eos_id).all()):
                 break
