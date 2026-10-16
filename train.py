@@ -2,7 +2,9 @@ from __future__ import annotations
 import argparse
 import math
 import random
+import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +14,9 @@ from natter.checkpoints import load_checkpoint, make_model, save_checkpoint, val
 from natter.corpus import StreamData, load_manifest
 from natter.settings import ROOT, config, device_name, sha256_file
 from natter.tokenizer import NatterTokenizer
+
+
+EVAL_PROTOCOL = 'fixed-windows-v1'
 
 
 def learning_rate(step, opts):
@@ -31,9 +36,13 @@ def evaluate(model, train_stream, val_stream, cfg, device, train_context):
     model.eval()
     result = {}
     for name, stream in [('train', train_stream), ('val', val_stream)]:
+        # Reuse the same windows at each evaluation: differences now reflect
+        # model changes, rather than newly sampled validation excerpts.
+        offset = 0 if name == 'train' else 100_003
+        rng = torch.Generator(device='cpu').manual_seed(cfg['training']['seed'] + offset)
         losses = []
         for _ in range(cfg['training']['eval_batches']):
-            xb, yb = stream.batch(cfg['training']['batch_size'], train_context, device)
+            xb, yb = stream.batch(cfg['training']['batch_size'], train_context, device, generator=rng)
             with torch.autocast(device_type=device, dtype=torch.float16, enabled=(device == 'cuda')):
                 _, loss = model(xb, yb)
             losses.append(loss.item())
@@ -86,10 +95,21 @@ def main():
     if last_path.exists():
         ckpt = load_checkpoint(last_path, device)
         validate_checkpoint(ckpt, arch, manifest['tokenizer_sha256'])
-        if ckpt.get('corpus_sha256') != manifest['corpus_sha256']:
-            if not args.allow_data_change:
-                raise RuntimeError('Данные изменились. Для продолжения с тем же токенизатором укажи --allow-data-change.')
-            print('Корпус обновлён: сбрасываю best_val и счётчик остановки. Старый best.pt оставлен как архив.')
+        corpus_changed = ckpt.get('corpus_sha256') != manifest['corpus_sha256']
+        eval_changed = ckpt.get('eval_protocol') != EVAL_PROTOCOL
+        if corpus_changed and not args.allow_data_change:
+            raise RuntimeError('Данные изменились. Для продолжения с тем же токенизатором укажи --allow-data-change.')
+        if corpus_changed or eval_changed:
+            # Never compare an old random-window val loss with the new fixed-window metric.
+            # Preserve the previous best weights before replacing the checkpoint.
+            if best_path.exists():
+                archive = ROOT / 'archive' / 'eval_protocol_history'
+                archive.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                backup = archive / f'pretrain_best_step{ckpt.get("step", 0)}_{stamp}.pt'
+                shutil.copy2(best_path, backup)
+                print('Предыдущий best checkpoint сохранён:', backup)
+            print('Новая проверочная выборка или протокол: сбрасываю best_val и счётчик остановки.')
         else:
             best_val = ckpt.get('best_val', float('inf'))
             bad_evals = ckpt.get('bad_evals', 0)
@@ -112,6 +132,7 @@ def main():
             'step': step, 'best_val': best_val, 'bad_evals': bad_evals,
             'arch': arch, 'tokenizer_sha256': manifest['tokenizer_sha256'],
             'corpus_sha256': manifest['corpus_sha256'],
+            'eval_protocol': EVAL_PROTOCOL,
         })
 
     try:
