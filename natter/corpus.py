@@ -249,11 +249,12 @@ class StreamData:
             raise RuntimeError('Сначала запусти: python prepare.py')
         self.tokens = np.memmap(path, dtype='<u4', mode='r')
 
-    def batch(self, batch_size, context_size, device):
+    def batch(self, batch_size, context_size, device, generator=None):
         import torch
         if len(self.tokens) <= context_size + 1:
             raise RuntimeError(f'Недостаточно токенов ({len(self.tokens)}) для context_size={context_size}.')
-        starts = torch.randint(0, len(self.tokens) - context_size - 1, (batch_size,)).tolist()
+        # Optional independent RNG lets validation use the same windows each time.
+        starts = torch.randint(0, len(self.tokens) - context_size, (batch_size,), generator=generator).tolist()
         chunks = np.stack([self.tokens[i:i + context_size + 1] for i in starts]).astype('int64')
         tokens = torch.from_numpy(chunks)
         return tokens[:, :-1].to(device), tokens[:, 1:].to(device)
