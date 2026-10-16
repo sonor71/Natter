@@ -17,6 +17,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from natter.settings import ROOT, sha256_file
+from natter.dialogue_filter import conversational_pair
 
 DATASET_URL = (
     "https://huggingface.co/datasets/GlayAI/Tiny-Russian-Dialogs/"
@@ -26,6 +27,7 @@ DATASET_SHA256 = "15aea2ae3ceb98c23082731fda3e389e7bcd09c5fbcc9c50b728b4b7b20fce
 SOURCE = "GlayAI/Tiny-Russian-Dialogs"
 LICENSE = "CC0-1.0"
 BASE = ROOT / "data" / "dialogues" / "tiny_ru"
+CHAT_BASE = ROOT / "data" / "dialogues" / "tiny_chat"
 RAW = ROOT / "downloads" / "Tiny-Russian-Dialogs.csv"
 
 # A different assistant's identity, location or claimed experiences
@@ -61,10 +63,12 @@ def is_usable(q, a):
     return True
 
 
-def select_pairs(rows, max_per_answer=3, seed=1337, validation_percent=10):
+def select_pairs(rows, max_per_answer=3, seed=1337, validation_percent=10, mode="general"):
     """Reservoir sampling per distinct answer; avoids first-N template bias."""
     if max_per_answer < 1:
         raise ValueError("max_per_answer must be >= 1")
+    if mode not in ("general", "conversation"):
+        raise ValueError("mode must be general or conversation")
     rng = random.Random(seed)
     seen_questions = set()
     buckets = defaultdict(list)
@@ -75,6 +79,9 @@ def select_pairs(rows, max_per_answer=3, seed=1337, validation_percent=10):
         q, a = normalize(row.get("q", "")), normalize(row.get("a", ""))
         if not is_usable(q, a):
             stats["filtered"] += 1
+            continue
+        if mode == "conversation" and not conversational_pair(q, a):
+            stats["off_topic"] += 1
             continue
         key_q = q.casefold()
         if key_q in seen_questions:
@@ -149,11 +156,14 @@ def write_pairs(path, pairs):
 def main():
     parser = argparse.ArgumentParser(description="Подготовить диалоговые тексты CC0 для NATTER")
     parser.add_argument("--file", type=Path, help="Уже скачанный CSV (без интернета)")
-    parser.add_argument("--max-per-answer", type=int, default=3)
+    parser.add_argument("--mode", choices=("conversation", "general"), default="conversation",
+                        help="conversation removes maths/translation tasks; general is legacy")
+    parser.add_argument("--max-per-answer", type=int, default=None)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--dry-run", action="store_true", help="Не записывать тренировочные пары")
     args = parser.parse_args()
-    if args.max_per_answer < 1:
+    limit = args.max_per_answer if args.max_per_answer is not None else (6 if args.mode == "conversation" else 3)
+    if limit < 1:
         parser.error("--max-per-answer должен быть >= 1")
     source = args.file if args.file else fetch_csv()
     if not source.is_file():
@@ -165,25 +175,32 @@ def main():
         if not {"q", "a"} <= set(reader.fieldnames or []):
             parser.error("CSV должен содержать колонки q и a")
         train, val, stats = select_pairs(
-            reader, max_per_answer=args.max_per_answer, seed=args.seed
+            reader, max_per_answer=limit, seed=args.seed, mode=args.mode
         )
     print(f"Прочитано: {stats['rows']:,}; отброшено: {stats.get('filtered',0):,}; "
           f"повторных вопросов: {stats.get('duplicate_questions',0):,}")
     print(f"Групп ответов: {stats['distinct_answer_groups']:,}; "
-          f"после фильтра train: {len(train):,}, val: {len(val):,}")
+          f"после фильтра train: {len(train):,}, val: {len(val):,}; "
+          f"тематически исключено: {stats.get('off_topic', 0):,}")
+    print('ПРИМЕРЫ ОТОБРАННЫХ ПАР (оцени качество прежде чем обучать):')
+    for question, answer in train[:5]:
+        print(f'  Ты: {question}\n  NATTER (обучающий ответ): {answer}')
     if args.dry_run:
         print("Dry run: выходные файлы не изменены")
         return
-    write_pairs(BASE / "train.jsonl", train)
-    write_pairs(BASE / "val.jsonl", val)
-    (BASE / "SOURCE.json").write_text(json.dumps({
+    target = CHAT_BASE if args.mode == "conversation" else BASE
+    write_pairs(target / "train.jsonl", train)
+    write_pairs(target / "val.jsonl", val)
+    (target / "SOURCE.json").write_text(json.dumps({
+        "mode": args.mode,
+        "max_per_answer": limit,
         "name": SOURCE, "license": LICENSE,
         "url": DATASET_URL, "sha256": sha256_file(source),
         "notes": "Synthetic single-turn QA; repeated answers capped, "
                  "answer-disjoint train/val; not for philosophy evaluation.",
         "stats": stats,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("Готово:", BASE / "train.jsonl", "и", BASE / "val.jsonl")
+    print("Готово:", target / "train.jsonl", "и", target / "val.jsonl")
     print("Не изменены: исходные data/dialogues/approved.jsonl, модель, checkpoint и BPE.")
 
 
