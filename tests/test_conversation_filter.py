@@ -32,11 +32,14 @@ class ConversationFilterTests(unittest.TestCase):
                 self.assertTrue(conversational_pair(q, a))
 
     def test_conversation_mode_keeps_answers_disjoint_and_is_deterministic(self):
+        # Number-bearing examples are intentionally excluded by the conversational filter.
+        # Use unique Cyrillic suffixes instead for the retained examples.
+        suffix = lambda i: ''.join(chr(1072 + int(d)) for d in str(i))
         rows = [
-            {"q": f"Привет, как настроение сегодня {i}!", "a": "Привет! Рад общению."}
+            {"q": f"Привет, как настроение сегодня {suffix(i)}!", "a": "Привет! Рад общению."}
             for i in range(20)
         ] + [
-            {"q": f"Поговорим о теме {i} подробнее?", "a": f"Попробуем обсудить тему {i} вместе."}
+            {"q": f"Поговорим о теме {suffix(i)} подробнее?", "a": f"Попробуем обсудить тему {suffix(i)} вместе."}
             for i in range(150)
         ] + [
             {"q": f"Сколько будет {i} + 1?", "a": f"Получится {i+1}."}
