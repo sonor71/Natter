@@ -14,8 +14,10 @@ from natter.tokenizer import NatterTokenizer
 
 
 def select_checkpoint(stage):
-    names = (['dialogue_best.pt', 'dialogue_tiny_ru_best.pt', 'pretrain_best.pt'] if stage == 'auto' else
-             ['pretrain_best.pt'] if stage == 'base' else ['dialogue_best.pt', 'dialogue_tiny_ru_best.pt'])
+    names = (['dialogue_tiny_chat_best.pt', 'dialogue_best.pt', 'dialogue_tiny_ru_best.pt', 'pretrain_best.pt'] if stage == 'auto' else
+             ['pretrain_best.pt'] if stage == 'base' else
+             ['dialogue_tiny_chat_best.pt'] if stage == 'tiny-chat' else
+             ['dialogue_best.pt', 'dialogue_tiny_chat_best.pt', 'dialogue_tiny_ru_best.pt'])
     for name in names:
         path = ROOT / 'checkpoints' / name
         if path.exists():
@@ -77,7 +79,7 @@ def make_prompt(question, history, memory, library, tokenizer, context, budget, 
 
 def main():
     parser = argparse.ArgumentParser(description='Локальный текстовый чат NATTER CORE')
-    parser.add_argument('--stage', choices=['auto', 'base', 'dialogue'], default='auto')
+    parser.add_argument('--stage', choices=['auto', 'base', 'dialogue', 'tiny-chat'], default='auto')
     parser.add_argument('--tokens', type=int, default=100)
     parser.add_argument('--temperature', type=float, default=0.8)
     parser.add_argument('--top-k', type=int, default=40)
