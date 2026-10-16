@@ -45,8 +45,9 @@ def dataset_splits(name, seed):
         train, val = split_dialogues(examples, seed)
         digest = sha256_file(path)
         return train, val, digest
-    if name == 'tiny-ru':
-        base = ROOT / 'data' / 'dialogues' / 'tiny_ru'
+    if name in ('tiny-ru', 'tiny-chat'):
+        folder = 'tiny_ru' if name == 'tiny-ru' else 'tiny_chat'
+        base = ROOT / 'data' / 'dialogues' / folder
         paths = (base / 'train.jsonl', base / 'val.jsonl')
         if not all(p.is_file() for p in paths):
             raise RuntimeError('Сначала импортируй CC0 диалоги: python import_dialogues.py')
@@ -59,7 +60,7 @@ def dataset_splits(name, seed):
 
 def main():
     p = argparse.ArgumentParser(description='Обучение своего NATTER CORE на разговорах')
-    p.add_argument('--dataset', choices=('approved', 'tiny-ru'), default='approved')
+    p.add_argument('--dataset', choices=('approved', 'tiny-ru', 'tiny-chat'), default='approved')
     p.add_argument('--steps', type=int, default=500, help='Дополнительные шаги')
     p.add_argument('--eval-every', type=int, default=100)
     args = p.parse_args()
@@ -90,7 +91,9 @@ def main():
     optim = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
     scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
 
-    suffix = 'dialogue_tiny_ru' if args.dataset == 'tiny-ru' else 'dialogue'
+    suffix = {'tiny-ru': 'dialogue_tiny_ru',
+              'tiny-chat': 'dialogue_tiny_chat',
+              'approved': 'dialogue'}[args.dataset]
     last = ROOT / 'checkpoints' / (suffix + '_last.pt')
     best = ROOT / 'checkpoints' / (suffix + '_best.pt')
     step = 0
