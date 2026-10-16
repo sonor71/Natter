@@ -34,6 +34,8 @@ def load_brain(stage='auto'):
     model.load_state_dict(ck['model_state_dict'])
     model.eval()
     print(f'Модель: {ck_path.name}; шаг: {ck["step"]}; устройство: {device}')
+    if ck.get('stage') == 'pretrain':
+        print('ВНИМАНИЕ: это базовая модель продолжения текста, не обученная вести диалог.')
     return model, tok, device
 
 
@@ -59,7 +61,7 @@ def make_prompt(question, history, memory, library, tokenizer, context, budget):
     ids = [tokenizer.bos_id] + tokenizer.encode(whole)
     # При переполнении сохраняем последний вопрос, затем наиболее свежую историю.
     if len(ids) > max_prompt:
-        ids = ids[-max_prompt:]
+        ids = [ids[0]] + ids[-(max_prompt - 1):]  # сохраняем BOS при обрезке контекста
     return ids, passages
 
 
@@ -68,7 +70,16 @@ def main():
     parser.add_argument('--stage', choices=['auto', 'base', 'dialogue'], default='auto')
     parser.add_argument('--tokens', type=int, default=100)
     parser.add_argument('--temperature', type=float, default=0.8)
+    parser.add_argument('--top-k', type=int, default=40)
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Фиксировать случайность для воспроизводимости')
     args = parser.parse_args()
+    if args.top_k < 0 or args.tokens < 1:
+        parser.error('--top-k должен быть >= 0; --tokens должен быть >= 1')
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
     model, tok, device = load_brain(args.stage)
     context = model.context_size
     memory, library = Memory(), Library()
@@ -127,8 +138,10 @@ def main():
         budget = max(1, min(args.tokens, context // 3))
         ids, citations = make_prompt(question, history, memory, library, tok, context, budget)
         x = torch.tensor([ids], dtype=torch.long, device=device)
+        forbidden = [i for i in (tok.pad_id, tok.bos_id, tok.sp.unk_id()) if i >= 0]
         generated = model.generate(x, max_new_tokens=budget, temperature=args.temperature,
-                                   top_k=40, eos_id=tok.eos_id)
+                                   top_k=args.top_k, eos_id=tok.eos_id,
+                                   forbidden_token_ids=forbidden)
         answer = tok.decode(generated[0, len(ids):].tolist()).strip()
         for delim in ('\nПОЛЬЗОВАТЕЛЬ:', '\nНАТТЕР:'):
             answer = answer.split(delim)[0]
