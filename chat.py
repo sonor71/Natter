@@ -14,8 +14,8 @@ from natter.tokenizer import NatterTokenizer
 
 
 def select_checkpoint(stage):
-    names = (['dialogue_best.pt', 'pretrain_best.pt'] if stage == 'auto' else
-             ['pretrain_best.pt'] if stage == 'base' else ['dialogue_best.pt'])
+    names = (['dialogue_best.pt', 'dialogue_tiny_ru_best.pt', 'pretrain_best.pt'] if stage == 'auto' else
+             ['pretrain_best.pt'] if stage == 'base' else ['dialogue_best.pt', 'dialogue_tiny_ru_best.pt'])
     for name in names:
         path = ROOT / 'checkpoints' / name
         if path.exists():
@@ -44,7 +44,17 @@ def append_log(path, row):
         f.write(json.dumps(row, ensure_ascii=False) + '\n')
 
 
-def make_prompt(question, history, memory, library, tokenizer, context, budget):
+def make_prompt(question, history, memory, library, tokenizer, context, budget, dialogue_mode=False):
+    if dialogue_mode:
+        # Match the prefix used by dialogue supervised fine-tuning exactly.
+        # The current SFT dataset contains single-turn Q/A, not system prompts,
+        # long chat histories or retrieved book passages.
+        pure = f'ПОЛЬЗОВАТЕЛЬ: {question}\nНАТТЕР: '
+        limit = max(32, context - budget)
+        ids = [tokenizer.bos_id] + tokenizer.encode(pure)
+        if len(ids) > limit:
+            ids = [ids[0]] + ids[-(limit - 1):]
+        return ids, []
     passages = library.search(question, k=1)
     memories = memory.search(question, k=2)
     system = 'Ты — НАТТЕР. Отвечай по существу. Не выдумывай источники и цитаты.\n'
@@ -87,6 +97,9 @@ def main():
             torch.cuda.manual_seed_all(args.seed)
     model, tok, device = load_brain(args.stage)
     context = model.context_size
+    is_dialogue = select_checkpoint(args.stage).name.startswith('dialogue')
+    if is_dialogue:
+        print('Диалоговая модель: использую формат вопрос-ответ, на котором она обучалась.')
     memory, library = Memory(), Library()
     (ROOT / 'logs').mkdir(exist_ok=True)
     logfile = ROOT / 'logs' / f'chat_{datetime.now().strftime("%Y%m%d_%H%M%S")}.jsonl'
@@ -141,7 +154,8 @@ def main():
                 print(f'[{item["source"]} §{item["passage"]}] {item["text"][:650]}')
             continue
         budget = max(1, min(args.tokens, context // 3))
-        ids, citations = make_prompt(question, history, memory, library, tok, context, budget)
+        ids, citations = make_prompt(question, history, memory, library, tok, context, budget,
+                                     dialogue_mode=is_dialogue)
         x = torch.tensor([ids], dtype=torch.long, device=device)
         forbidden = [i for i in (tok.pad_id, tok.bos_id, tok.sp.unk_id()) if i >= 0]
         generated = model.generate(x, max_new_tokens=budget, temperature=args.temperature,

@@ -1,97 +1,167 @@
+"""Fine-tune NATTER's OWN checkpoint on Russian supervised Q/A pairs.
+
+The pretrained weights are never downloaded from a model hub.
+Datasets:
+  approved: user-curated data/dialogues/approved.jsonl (unchanged workflow)
+  tiny-ru: CC0 filtered public split prepared by import_dialogues.py
+"""
 from __future__ import annotations
+
 import argparse
 import hashlib
+import random
 import time
 
 import torch
 
 from natter.checkpoints import load_checkpoint, make_model, save_checkpoint, validate_checkpoint
 from natter.corpus import load_manifest
-from natter.dialogues import load_dialogues, split_dialogues, encode_dialogues, sample_batch
+from natter.dialogues import load_dialogues, load_jsonl_pairs, split_dialogues, encode_dialogues, sample_batch
 from natter.settings import ROOT, config, device_name, sha256_file
 from natter.tokenizer import NatterTokenizer
 
 
 @torch.no_grad()
-def evaluate(model, data, tok, device, n=10):
+def evaluate(model, data, tok, device, n=10, seed=1776):
+    was_training = model.training
     model.eval()
+    rng = random.Random(seed)
     losses = []
     for _ in range(n):
-        x, y = sample_batch(data, 2, tok.pad_id, device)
-        _, loss = model(x, y)
+        x, y = sample_batch(data, 4, tok.pad_id, device, rng=rng)
+        with torch.autocast(device_type=device, dtype=torch.float16, enabled=(device == 'cuda')):
+            _, loss = model(x, y)
         losses.append(loss.item())
+    model.train(was_training)
     return sum(losses) / len(losses)
 
 
+def dataset_splits(name, seed):
+    if name == 'approved':
+        path = ROOT / 'data' / 'dialogues' / 'approved.jsonl'
+        examples = load_dialogues()
+        if len(examples) < 10:
+            raise RuntimeError('Для надёжной настройки лучше хотя бы 10 проверенных диалогов.')
+        train, val = split_dialogues(examples, seed)
+        digest = sha256_file(path)
+        return train, val, digest
+    if name == 'tiny-ru':
+        base = ROOT / 'data' / 'dialogues' / 'tiny_ru'
+        paths = (base / 'train.jsonl', base / 'val.jsonl')
+        if not all(p.is_file() for p in paths):
+            raise RuntimeError('Сначала импортируй CC0 диалоги: python import_dialogues.py')
+        train = load_jsonl_pairs(paths[0], min_examples=10)
+        val = load_jsonl_pairs(paths[1], min_examples=5)
+        fingerprint = ''.join(sha256_file(p) for p in paths)
+        return train, val, hashlib.sha256(fingerprint.encode()).hexdigest()
+    raise ValueError('Unsupported dialogue dataset')
+
+
 def main():
-    p = argparse.ArgumentParser(description='Отдельная стадия: обучение диалогам на проверенных ответах')
-    p.add_argument('--steps', type=int, default=200, help='Дополнительные шаги')
+    p = argparse.ArgumentParser(description='Обучение своего NATTER CORE на разговорах')
+    p.add_argument('--dataset', choices=('approved', 'tiny-ru'), default='approved')
+    p.add_argument('--steps', type=int, default=500, help='Дополнительные шаги')
+    p.add_argument('--eval-every', type=int, default=100)
     args = p.parse_args()
-    if args.steps <= 0:
-        raise SystemExit('Шагов должно быть > 0')
+    if args.steps <= 0 or args.eval_every <= 0:
+        p.error('--steps и --eval-every должны быть положительными')
+
     cfg = config()
+    seed = cfg['training']['seed']
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     device = device_name()
     manifest = load_manifest()
     tok = NatterTokenizer(ROOT / 'artifacts' / 'tokenizer.model')
     if sha256_file(tok.model_file) != manifest['tokenizer_sha256']:
-        raise RuntimeError('Токенизатор изменился после подготовки корпуса.')
-    examples = load_dialogues()
-    dialogues_sha = sha256_file(ROOT / 'data' / 'dialogues' / 'approved.jsonl')
-    train, val = split_dialogues(examples, cfg['training']['seed'])
-    train, bad1 = encode_dialogues(train, tok, cfg['model']['context_size'])
-    val, bad2 = encode_dialogues(val, tok, cfg['model']['context_size'])
+        raise RuntimeError('Токенизатор не совпадает с корпусом.')
+
+    train_raw, val_raw, data_sha = dataset_splits(args.dataset, seed)
+    train, bad1 = encode_dialogues(train_raw, tok, cfg['model']['context_size'])
+    val, bad2 = encode_dialogues(val_raw, tok, cfg['model']['context_size'])
     if not train or not val:
-        raise RuntimeError('Нет допустимых диалогов после токенизации. Добавь короткие диалоги или увеличь контекст.')
-    print(f'Dialogues: train={len(train)}, val={len(val)}; пропущено слишком длинных={bad1 + bad2}')
+        raise RuntimeError('Пары слишком длинные или данные пусты.')
+    print(f'Dataset {args.dataset}: train={len(train):,}, val={len(val):,}, '
+          f'пропущено слишком длинных={bad1 + bad2}', flush=True)
+    print('Обучение: только ответы; вопрос маскируется в loss.')
     model, arch = make_model(cfg, tok, device)
     optim = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
-    last = ROOT / 'checkpoints' / 'dialogue_last.pt'
-    best = ROOT / 'checkpoints' / 'dialogue_best.pt'
+    scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
+
+    suffix = 'dialogue_tiny_ru' if args.dataset == 'tiny-ru' else 'dialogue'
+    last = ROOT / 'checkpoints' / (suffix + '_last.pt')
+    best = ROOT / 'checkpoints' / (suffix + '_best.pt')
     step = 0
     best_val = float('inf')
     if last.exists():
         ck = load_checkpoint(last, device)
         validate_checkpoint(ck, arch, manifest['tokenizer_sha256'])
+        if ck.get('dialogues_sha256') != data_sha:
+            raise RuntimeError(
+                'Диалоговый корпус изменился. Нельзя продолжать с прежним '
+                'состоянием автоматически; сделай резервную копию и выбери '
+                'новую версию обучения.'
+            )
         model.load_state_dict(ck['model_state_dict'])
         optim.load_state_dict(ck['optimizer_state_dict'])
+        if ck.get('scaler_state_dict'):
+            scaler.load_state_dict(ck['scaler_state_dict'])
+        best_val = float(ck.get('best_val', float('inf')))
         step = int(ck['step'])
-        if ck.get('dialogues_sha256') == dialogues_sha:
-            best_val = float(ck.get('best_val', float('inf')))
-        else:
-            print('Новые исправления изменили обучающие данные: сбрасываю лучшую проверочную ошибку.')
-        print('Продолжение диалогового обучения с шага', step)
+        print(f'Продолжаю диалоговое обучение с шага {step}', flush=True)
     else:
         base = ROOT / 'checkpoints' / 'pretrain_best.pt'
-        if not base.exists():
-            raise RuntimeError('Сначала нужна предобученная НАМИ модель: python train.py --steps ...')
+        if not base.is_file():
+            raise RuntimeError('Нет собственных pretrained весов: сначала нужен train.py.')
         ck = load_checkpoint(base, device)
         validate_checkpoint(ck, arch, manifest['tokenizer_sha256'])
         model.load_state_dict(ck['model_state_dict'])
-        print('Загружены собственные веса базовой модели:', base)
-    start = time.time()
-    for iteration in range(args.steps):
-        model.train()
-        x, y = sample_batch(train, min(4, len(train)), tok.pad_id, device)
-        _, loss = model(x, y)
-        optim.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optim.step()
-        step += 1
-        if step == 1 or step % 50 == 0 or iteration == args.steps - 1:
-            val_loss = evaluate(model, val, tok, device)
-            print(f'Диалоги: step={step}, train={loss.item():.4f}, val={val_loss:.4f}, {time.time()-start:.1f}s')
-            payload = {
-                'stage': 'dialogue', 'step': step, 'arch': arch,
-                'tokenizer_sha256': manifest['tokenizer_sha256'],
-                'model_state_dict': model.state_dict(), 'optimizer_state_dict': optim.state_dict(),
-                'best_val': min(best_val, val_loss), 'dialogues_sha256': dialogues_sha,
-            }
-            if val_loss < best_val:
-                best_val = val_loss
-                save_checkpoint(best, payload)
-            save_checkpoint(last, payload)
-    print('Готово. Диалоговые веса:', best)
+        print(f'Стартую от своих весов: {base.name}, шаг {ck.get("step")}', flush=True)
+
+    start_time = time.time()
+    until = step + args.steps
+
+    def save(path):
+        save_checkpoint(path, {
+            'stage': 'dialogue',
+            'dataset': args.dataset, 'step': step,
+            'arch': arch, 'tokenizer_sha256': manifest['tokenizer_sha256'],
+            'dialogues_sha256': data_sha,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optim.state_dict(),
+            'scaler_state_dict': scaler.state_dict(),
+            'best_val': best_val,
+        })
+
+    try:
+        while step < until:
+            model.train()
+            x, y = sample_batch(train, min(8, len(train)), tok.pad_id, device)
+            optim.zero_grad(set_to_none=True)
+            with torch.autocast(device_type=device, dtype=torch.float16, enabled=(device == 'cuda')):
+                _, loss = model(x, y)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optim)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optim)
+            scaler.update()
+            step += 1
+            if step % args.eval_every == 0 or step == until or step == 1:
+                val_loss = evaluate(model, val, tok, device)
+                print(f'Dialogue step {step}: train {loss.item():.4f} | '
+                      f'val {val_loss:.4f} | {time.time()-start_time:.1f}s', flush=True)
+                if val_loss < best_val:
+                    best_val = val_loss
+                    save(best)
+                    print('  Новый лучший диалоговый checkpoint:', best, flush=True)
+                save(last)
+    except KeyboardInterrupt:
+        print('Остановка пользователем; сохраняю checkpoint.')
+    finally:
+        save(last)
+        print('Диалоговая модель:', best if best.exists() else last)
 
 
 if __name__ == '__main__':

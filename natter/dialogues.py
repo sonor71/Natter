@@ -9,9 +9,12 @@ from .settings import ROOT
 
 
 def load_dialogues():
-    path = ROOT / 'data' / 'dialogues' / 'approved.jsonl'
+    return load_jsonl_pairs(ROOT / 'data' / 'dialogues' / 'approved.jsonl')
+
+
+def load_jsonl_pairs(path, min_examples=4):
     if not path.exists():
-        raise RuntimeError('Нет data/dialogues/approved.jsonl. В чате используй /fix.')
+        raise RuntimeError(f'Нет файла диалогов: {path}')
     examples = []
     for n, row in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
         if not row.strip():
@@ -20,9 +23,10 @@ def load_dialogues():
         question, answer = record.get('user', '').strip(), record.get('assistant', '').strip()
         if question and answer:
             examples.append((question, answer))
-    if len(examples) < 4:
-        raise RuntimeError('Нужно хотя бы 4 одобренных диалога; для полезного дообучения — намного больше.')
-    return list(dict.fromkeys(examples))
+    examples = list(dict.fromkeys(examples))
+    if len(examples) < min_examples:
+        raise RuntimeError(f'Недостаточно диалогов в {path}: {len(examples)} < {min_examples}')
+    return examples
 
 
 def split_dialogues(examples, seed):
@@ -51,8 +55,8 @@ def encode_dialogues(examples, tok, limit):
     return data, skipped
 
 
-def sample_batch(data, batch_size, pad_id, device):
-    items = random.choices(data, k=batch_size)
+def sample_batch(data, batch_size, pad_id, device, rng=None):
+    items = (rng or random).choices(data, k=batch_size)
     longest = max(len(x) for x, _ in items)
     xs = [x + [pad_id] * (longest-len(x)) for x, _ in items]
     ys = [y + [-100] * (longest-len(y)) for _, y in items]
