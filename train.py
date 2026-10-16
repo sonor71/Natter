@@ -14,6 +14,7 @@ from natter.checkpoints import load_checkpoint, make_model, save_checkpoint, val
 from natter.corpus import StreamData, load_manifest
 from natter.settings import ROOT, config, device_name, sha256_file
 from natter.tokenizer import NatterTokenizer
+from natter.training_metrics import effective_tokens_per_step, training_progress
 
 
 EVAL_PROTOCOL = 'fixed-windows-v1'
@@ -122,6 +123,10 @@ def main():
     else:
         print('Предыдущий checkpoint не найден: обучение новых весов с нуля.')
     until = step + args.steps
+    run_initial_step = step
+    tokens_per_step = effective_tokens_per_step(opts['batch_size'], opts['grad_accum_steps'], train_context)
+    print(f'Учебный корпус: {len(train_data.tokens):,} токенов; '
+          f'обновление весов использует {tokens_per_step:,} позиций токенов (с повторами).')
     start = time.time()
     best_is_current = False
 
@@ -154,7 +159,13 @@ def main():
             step += 1
             if step == 1 or step % opts['eval_every'] == 0 or step == until:
                 scores = evaluate(model, train_data, val_data, cfg, device, train_context)
-                print(f"step {step:6d} | train {scores['train']:.4f} | val {scores['val']:.4f} | lr {lr:.6f} | {time.time()-start:.1f}s", flush=True)
+                progress = training_progress(step, run_initial_step, tokens_per_step,
+                                             len(train_data.tokens), scores['val'])
+                print(f"step {step:6d} | train {scores['train']:.4f} | val {scores['val']:.4f} "
+                      f"| ppl {progress['val_perplexity']:.1f} "
+                      f"| run_tokens {progress['run_tokens_seen']:,} "
+                      f"| ~passes {progress['sampled_corpus_passes_this_run']:.2f} "
+                      f"| lr {lr:.6f} | {time.time()-start:.1f}s", flush=True)
                 if scores['val'] < best_val:
                     best_val = scores['val']
                     bad_evals = 0
