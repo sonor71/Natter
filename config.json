@@ -1,0 +1,26 @@
+{
+  "tokenizer_vocab_size": 8192,
+  "validation_fraction": 0.15,
+  "model": {
+    "context_size": 1024,
+    "dim": 384,
+    "n_layers": 6,
+    "n_heads": 6,
+    "dropout": 0.0,
+    "rope_theta": 10000.0
+  },
+  "training": {
+    "batch_size": 4,
+    "grad_accum_steps": 8,
+    "learning_rate": 0.0003,
+    "min_learning_rate": 0.00003,
+    "warmup_steps": 100,
+    "decay_steps": 10000,
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+    "eval_every": 100,
+    "eval_batches": 12,
+    "patience": 8,
+    "seed": 1337
+  }
+}

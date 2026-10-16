@@ -1,0 +1,35 @@
+NATTER CORE — СТАРТ (Windows, PowerShell)
+=======================================
+
+1. Распаковать папку NATTER_CORE в C:\ .
+2. Открыть PowerShell и выполнить:
+
+cd C:\NATTER_CORE
+py -3.12 -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+
+3. Установить PyTorch с CUDA, используя инструкцию на pytorch.org/get-started/locally/ .
+   ВЫБРАТЬ Windows / Pip / Python / CUDA.
+   Проверить:
+
+.\venv\Scripts\python.exe -c "import torch; print('CUDA:',torch.cuda.is_available())"
+
+4. Только для тестового запуска:
+
+.\venv\Scripts\python.exe prepare.py
+.\venv\Scripts\python.exe train.py --steps 100
+.\venv\Scripts\python.exe build_library.py
+.\venv\Scripts\python.exe chat.py
+
+5. Чтобы реально учить Наттера, сначала собери НАМНОГО БОЛЬШЕ
+   разнообразных качественных текстов в data/raw/.
+   Этот архив содержит лишь короткие образцы, чтобы проверить код.
+
+6. После накопления одобренных диалогов:
+
+.\venv\Scripts\python.exe train_dialogue.py --steps 100
+.\venv\Scripts\python.exe evaluate_dialogue.py
+
+Подробные инструкции: README.md
+Важно: модель и токенизатор обучаются с нуля. Никаких предобученных весов
+или удалённого AI. Результат не становится философом после 100 шагов.
