@@ -38,6 +38,9 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="0 означает greedy: повторяемый результат")
     parser.add_argument("--top-k", type=int, default=40)
+    parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--repetition-penalty", type=float, default=1.0)
+    parser.add_argument("--no-repeat-ngram", type=int, default=0)
     parser.add_argument("--prompt", action="append", help="Своя фраза; можно повторять")
     parser.add_argument("--save", action="store_true", help="Сохранить результаты локально в logs/")
     args = parser.parse_args()
@@ -45,6 +48,8 @@ def main():
         parser.error("--tokens должен быть от 1 до 1024")
     if args.temperature < 0 or args.top_k < 0:
         parser.error("--temperature и --top-k должны быть неотрицательны")
+    if not 0 < args.top_p <= 1 or args.repetition_penalty < 1 or (args.no_repeat_ngram != 0 and args.no_repeat_ngram < 2):
+        parser.error("Неверные параметры контроля повторов или top-p")
 
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
@@ -98,6 +103,9 @@ def main():
                 x, max_new_tokens=args.tokens, temperature=args.temperature,
                 top_k=args.top_k, eos_id=tok.eos_id,
                 forbidden_token_ids=forbidden,
+                repetition_penalty=args.repetition_penalty,
+                no_repeat_ngram_size=args.no_repeat_ngram,
+                top_p=args.top_p,
             )
         new_ids = result[0, len(prompt_ids):].tolist()
         generated = tok.decode(new_ids)
@@ -118,7 +126,9 @@ def main():
             "checkpoint": ck_path.name, "checkpoint_step": ck.get("step"),
             "tokenizer_sha256": sha256_file(tok.model_file),
             "seed": args.seed, "temperature": args.temperature,
-            "top_k": args.top_k, "tokens": args.tokens,
+            "top_k": args.top_k, "top_p": args.top_p, "tokens": args.tokens,
+            "repetition_penalty": args.repetition_penalty,
+            "no_repeat_ngram": args.no_repeat_ngram,
             "roundtrip_ok": decoded_sample == TOKENIZER_SAMPLE,
             "unknown_token_count": unknowns, "outputs": outputs,
         }, ensure_ascii=False, indent=2), encoding="utf-8")
