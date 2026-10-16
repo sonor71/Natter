@@ -25,7 +25,7 @@ from natter.tokenizer import NatterTokenizer
 DEFAULT_PROMPTS = (
     "Философия — это",
     "Свобода человека зависит от",
-    "ПОЛЬЗОВАТЕЛЬ: Что такое свобода?\\nНАТТЕР: ",
+    "ПОЛЬЗОВАТЕЛЬ: Что такое свобода?\nНАТТЕР: ",
 )
 TOKENIZER_SAMPLE = "Привет, Наттер! Философия Ницше и Батая."
 
@@ -101,7 +101,7 @@ def main():
             )
         new_ids = result[0, len(prompt_ids):].tolist()
         generated = tok.decode(new_ids)
-        print(f"\\n[{index}] Промпт: {prompt!r}")
+        print(f"\n[{index}] Промпт: {prompt!r}")
         print("Предсказания следующего токена:", top)
         print("Продолжение:", repr(generated))
         outputs.append({
@@ -109,7 +109,7 @@ def main():
             "generated_tokens": len(new_ids),
         })
 
-    print("\\nВАЖНО: бессвязный текст при низком loss может означать недообучение;")
+    print("\nВАЖНО: бессвязный текст при низком loss может означать недообучение;")
     print("диалоговый промпт также не соответствует энциклопедическому предобучению.")
     if args.save:
         path = ROOT / "logs" / f"diagnose_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
