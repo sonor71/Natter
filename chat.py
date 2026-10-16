@@ -71,11 +71,16 @@ def main():
     parser.add_argument('--tokens', type=int, default=100)
     parser.add_argument('--temperature', type=float, default=0.8)
     parser.add_argument('--top-k', type=int, default=40)
+    parser.add_argument('--top-p', type=float, default=0.95)
+    parser.add_argument('--repetition-penalty', type=float, default=1.15)
+    parser.add_argument('--no-repeat-ngram', type=int, default=3)
     parser.add_argument('--seed', type=int, default=None,
                         help='Фиксировать случайность для воспроизводимости')
     args = parser.parse_args()
     if args.top_k < 0 or args.tokens < 1:
         parser.error('--top-k должен быть >= 0; --tokens должен быть >= 1')
+    if not 0 < args.top_p <= 1 or args.repetition_penalty < 1 or args.no_repeat_ngram not in (0,) and args.no_repeat_ngram < 2:
+        parser.error('--top-p: (0,1]; --repetition-penalty: >=1; --no-repeat-ngram: 0 или >=2')
     if args.seed is not None:
         torch.manual_seed(args.seed)
         if torch.cuda.is_available():
@@ -141,7 +146,10 @@ def main():
         forbidden = [i for i in (tok.pad_id, tok.bos_id, tok.sp.unk_id()) if i >= 0]
         generated = model.generate(x, max_new_tokens=budget, temperature=args.temperature,
                                    top_k=args.top_k, eos_id=tok.eos_id,
-                                   forbidden_token_ids=forbidden)
+                                   forbidden_token_ids=forbidden,
+                                   repetition_penalty=args.repetition_penalty,
+                                   no_repeat_ngram_size=args.no_repeat_ngram,
+                                   top_p=args.top_p)
         answer = tok.decode(generated[0, len(ids):].tolist()).strip()
         for delim in ('\nПОЛЬЗОВАТЕЛЬ:', '\nНАТТЕР:'):
             answer = answer.split(delim)[0]
