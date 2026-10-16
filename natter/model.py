@@ -111,12 +111,20 @@ class NatterTransformer(nn.Module):
         return logits, loss
 
     @torch.inference_mode()
-    def generate(self, prefix, max_new_tokens=120, temperature=0.8, top_k=40, eos_id=None):
+    def generate(self, prefix, max_new_tokens=120, temperature=0.8, top_k=40, eos_id=None, forbidden_token_ids=None):
         self.eval()
+        if prefix.ndim != 2 or prefix.shape[1] < 1:
+            raise ValueError('prefix must have shape (batch, length >= 1)')
         result = prefix
+        vocab = self.embed.num_embeddings
+        forbidden = sorted({int(i) for i in (forbidden_token_ids or ()) if 0 <= int(i) < vocab})
+        if len(forbidden) == vocab:
+            raise ValueError('All vocabulary tokens are forbidden')
         for _ in range(max_new_tokens):
             logits, _ = self(result[:, -self.context_size:])
             logits = logits[:, -1].float()
+            if forbidden:
+                logits[:, forbidden] = -float('inf')
             if temperature <= 0:
                 nxt = logits.argmax(-1, keepdim=True)
             else:
