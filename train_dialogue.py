@@ -17,6 +17,7 @@ import torch
 from natter.checkpoints import load_checkpoint, make_model, save_checkpoint, validate_checkpoint
 from natter.corpus import load_manifest
 from natter.dialogues import load_dialogues, load_jsonl_pairs, split_dialogues, encode_dialogues, sample_batch
+from natter.multiturn import load_conversations, encode_conversations
 from natter.settings import ROOT, config, device_name, sha256_file
 from natter.tokenizer import NatterTokenizer
 
@@ -37,6 +38,13 @@ def evaluate(model, data, tok, device, n=10, seed=1776):
 
 
 def dataset_splits(name, seed):
+    if name == 'multiturn':
+        base = ROOT / 'data' / 'dialogues' / 'multiturn'
+        train_file, val_file = base / 'train.jsonl', base / 'val.jsonl'
+        train = load_conversations(train_file, min_examples=5)
+        val = load_conversations(val_file, min_examples=2)
+        digest = ''.join(sha256_file(p) for p in (train_file, val_file))
+        return train, val, hashlib.sha256(digest.encode()).hexdigest()
     if name == 'approved':
         path = ROOT / 'data' / 'dialogues' / 'approved.jsonl'
         examples = load_dialogues()
@@ -60,7 +68,7 @@ def dataset_splits(name, seed):
 
 def main():
     p = argparse.ArgumentParser(description='Обучение своего NATTER CORE на разговорах')
-    p.add_argument('--dataset', choices=('approved', 'tiny-ru', 'tiny-chat'), default='approved')
+    p.add_argument('--dataset', choices=('approved', 'tiny-ru', 'tiny-chat', 'multiturn'), default='approved')
     p.add_argument('--steps', type=int, default=500, help='Дополнительные шаги')
     p.add_argument('--eval-every', type=int, default=100)
     args = p.parse_args()
@@ -80,20 +88,25 @@ def main():
         raise RuntimeError('Токенизатор не совпадает с корпусом.')
 
     train_raw, val_raw, data_sha = dataset_splits(args.dataset, seed)
-    train, bad1 = encode_dialogues(train_raw, tok, cfg['model']['context_size'])
-    val, bad2 = encode_dialogues(val_raw, tok, cfg['model']['context_size'])
+    encoder = encode_conversations if args.dataset == 'multiturn' else encode_dialogues
+    train, bad1 = encoder(train_raw, tok, cfg['model']['context_size'])
+    val, bad2 = encoder(val_raw, tok, cfg['model']['context_size'])
     if not train or not val:
         raise RuntimeError('Пары слишком длинные или данные пусты.')
     print(f'Dataset {args.dataset}: train={len(train):,}, val={len(val):,}, '
           f'пропущено слишком длинных={bad1 + bad2}', flush=True)
     print('Обучение: только ответы; вопрос маскируется в loss.')
+    if args.dataset == 'multiturn' and len(train) < 100:
+        print('ПРЕДУПРЕЖДЕНИЕ: менее 100 многотуровых примеров. Это проверка механики,'
+              ' не достаточный корпус для появления многошагового мышления.')
     model, arch = make_model(cfg, tok, device)
     optim = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
     scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
 
     suffix = {'tiny-ru': 'dialogue_tiny_ru',
               'tiny-chat': 'dialogue_tiny_chat',
-              'approved': 'dialogue'}[args.dataset]
+              'approved': 'dialogue',
+              'multiturn': 'dialogue_multiturn'}[args.dataset]
     last = ROOT / 'checkpoints' / (suffix + '_last.pt')
     best = ROOT / 'checkpoints' / (suffix + '_best.pt')
     step = 0
@@ -115,7 +128,10 @@ def main():
         step = int(ck['step'])
         print(f'Продолжаю диалоговое обучение с шага {step}', flush=True)
     else:
-        base = ROOT / 'checkpoints' / 'pretrain_best.pt'
+        if args.dataset == 'multiturn' and (ROOT / 'checkpoints' / 'dialogue_tiny_chat_best.pt').is_file():
+            base = ROOT / 'checkpoints' / 'dialogue_tiny_chat_best.pt'
+        else:
+            base = ROOT / 'checkpoints' / 'pretrain_best.pt'
         if not base.is_file():
             raise RuntimeError('Нет собственных pretrained весов: сначала нужен train.py.')
         ck = load_checkpoint(base, device)

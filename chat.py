@@ -8,15 +8,18 @@ import torch
 from natter.checkpoints import load_checkpoint, make_model, validate_checkpoint
 from natter.corpus import load_manifest
 from natter.library import Library
+from natter.argument_logic import ArgumentSyntaxError, reason
+from natter.multiturn import build_context
 from natter.memory import Memory
 from natter.settings import ROOT, config, device_name, sha256_file
 from natter.tokenizer import NatterTokenizer
 
 
 def select_checkpoint(stage):
-    names = (['dialogue_tiny_chat_best.pt', 'dialogue_best.pt', 'dialogue_tiny_ru_best.pt', 'pretrain_best.pt'] if stage == 'auto' else
+    names = (['dialogue_multiturn_best.pt', 'dialogue_tiny_chat_best.pt', 'dialogue_best.pt', 'dialogue_tiny_ru_best.pt', 'pretrain_best.pt'] if stage == 'auto' else
              ['pretrain_best.pt'] if stage == 'base' else
              ['dialogue_tiny_chat_best.pt'] if stage == 'tiny-chat' else
+             ['dialogue_multiturn_best.pt'] if stage == 'multiturn' else
              ['dialogue_best.pt', 'dialogue_tiny_chat_best.pt', 'dialogue_tiny_ru_best.pt'])
     for name in names:
         path = ROOT / 'checkpoints' / name
@@ -79,7 +82,7 @@ def make_prompt(question, history, memory, library, tokenizer, context, budget, 
 
 def main():
     parser = argparse.ArgumentParser(description='Локальный текстовый чат NATTER CORE')
-    parser.add_argument('--stage', choices=['auto', 'base', 'dialogue', 'tiny-chat'], default='auto')
+    parser.add_argument('--stage', choices=['auto', 'base', 'dialogue', 'tiny-chat', 'multiturn'], default='auto')
     parser.add_argument('--tokens', type=int, default=100)
     parser.add_argument('--temperature', type=float, default=0.8)
     parser.add_argument('--top-k', type=int, default=40)
@@ -99,15 +102,20 @@ def main():
             torch.cuda.manual_seed_all(args.seed)
     model, tok, device = load_brain(args.stage)
     context = model.context_size
-    is_dialogue = select_checkpoint(args.stage).name.startswith('dialogue')
+    loaded_name = select_checkpoint(args.stage).name
+    is_dialogue = loaded_name.startswith('dialogue')
+    is_multiturn = loaded_name.startswith('dialogue_multiturn')
     if is_dialogue:
         print('Диалоговая модель: использую формат вопрос-ответ, на котором она обучалась.')
+    if is_multiturn:
+        print('Многотуровый режим: передаю модели предыдущие 4 реплики, с EOS между ответами.')
     memory, library = Memory(), Library()
     (ROOT / 'logs').mkdir(exist_ok=True)
     logfile = ROOT / 'logs' / f'chat_{datetime.now().strftime("%Y%m%d_%H%M%S")}.jsonl'
     history = []
     last_question = None
     print('Команды: /exit, /fix <правильный ответ>, /remember <факт>,')
+    print(' /logic <посылки через ;> — строгий многошаговый вывод (без модели)')
     print(' /position <тезис> | <аргументы> | <сомнения>, /mem, /find <тема>')
     print('Разговор записывается в:', logfile)
     while True:
@@ -120,6 +128,12 @@ def main():
             continue
         if question in ('/exit', '/quit', 'выход'):
             break
+        if question == '/logic' or question.startswith('/logic '):
+            try:
+                print(reason(question[6:].strip()).render())
+            except ArgumentSyntaxError as exc:
+                print('Ошибка формальной логики:', exc)
+            continue
         if question.startswith('/fix '):
             if last_question is None:
                 print('Сначала задай обычный вопрос.')
@@ -156,8 +170,12 @@ def main():
                 print(f'[{item["source"]} §{item["passage"]}] {item["text"][:650]}')
             continue
         budget = max(1, min(args.tokens, context // 3))
-        ids, citations = make_prompt(question, history, memory, library, tok, context, budget,
-                                     dialogue_mode=is_dialogue)
+        if is_multiturn:
+            ids = build_context(tok, history, question, context, budget, max_turns=4)
+            citations = []
+        else:
+            ids, citations = make_prompt(question, history, memory, library, tok, context, budget,
+                                         dialogue_mode=is_dialogue)
         x = torch.tensor([ids], dtype=torch.long, device=device)
         forbidden = [i for i in (tok.pad_id, tok.bos_id, tok.sp.unk_id()) if i >= 0]
         generated = model.generate(x, max_new_tokens=budget, temperature=args.temperature,
