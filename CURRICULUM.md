@@ -32,13 +32,16 @@ git pull origin main
 # Создать отдельные локальные файлы train/val и SOURCE.json
 .\venv\Scripts\python.exe build_curriculum.py
 
+# СНАЧАЛА измерить, как отвечает исходная модель на тех же задачах.
+.\venv\Scripts\python.exe probe_curriculum.py --stage base --per-skill 2 --seed 42 --save
+
 # Новая модель берёт собственные pretrain_best.pt, НЕ чужие веса.
 # Сохраняется отдельно от tiny-chat и base.
 .\venv\Scripts\python.exe train_dialogue.py --dataset curriculum --steps 1200 --patience 6
 
-# Проверить логические задачи на отложенных сценариях и увидеть
-# философские ответы для РУЧНОЙ оценки.
-.\venv\Scripts\python.exe probe_curriculum.py --per-skill 2 --seed 42 --save
+# ПОТОМ измерить результат на тех же отложенных сценариях.
+# Философские ответы оцениваются вручную.
+.\venv\Scripts\python.exe probe_curriculum.py --stage curriculum --per-skill 2 --seed 42 --save
 
 # Поговорить именно с новой многотуровой моделью
 .\venv\Scripts\python.exe chat.py --stage curriculum --temperature 0.5 --tokens 120
