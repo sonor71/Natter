@@ -14,6 +14,8 @@ import json
 import random
 from pathlib import Path
 
+from .philosophy_cases import examples as philosophy_examples
+
 # Each scenario is an explicit assumption chain A -> B -> C, not a claim
 # that either conditional is necessarily true in the real world.
 # name is for the separate memory exercise.
@@ -129,6 +131,11 @@ def build(seed: int = 1337):
                 "scenario": i,
                 "variant": row["variant"],
             })
+    # Genuine editorial examples are kept separate from algorithmically varied
+    # exercises and are not silently multiplied to inflate dataset size.
+    authored = philosophy_examples()
+    for name in ('train', 'val'):
+        splits[name].extend(authored[name])
     rng = random.Random(seed)
     for records in splits.values():
         rng.shuffle(records)
@@ -160,8 +167,11 @@ def write_curriculum(root: Path, seed: int = 1337, overwrite: bool = False):
         "scenarios_validation": len(SCENARIOS) - 24,
         "train_examples": len(splits["train"]),
         "validation_examples": len(splits["val"]),
-        "limitations": "Template-based tasks; val holds out scenarios, not question structure. "
-                       "Passing these tasks does not prove general reasoning or philosophical comprehension.",
+        "author_written_philosophy_train": len(philosophy_examples()["train"]),
+        "author_written_philosophy_validation": len(philosophy_examples()["val"]),
+        "limitations": "Most examples are template-generated; validation holds out scenarios, not templates. "
+                       "The small independently authored philosophy portion holds out topics. "
+                       "Neither split alone proves general reasoning or philosophical comprehension.",
     }
     (destination / "SOURCE.json").write_text(json.dumps(
         metadata, ensure_ascii=False, indent=2), encoding="utf-8"
