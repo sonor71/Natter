@@ -38,8 +38,8 @@ def evaluate(model, data, tok, device, n=10, seed=1776):
 
 
 def dataset_splits(name, seed):
-    if name == 'multiturn':
-        base = ROOT / 'data' / 'dialogues' / 'multiturn'
+    if name in ('multiturn', 'curriculum'):
+        base = ROOT / 'data' / 'dialogues' / name
         train_file, val_file = base / 'train.jsonl', base / 'val.jsonl'
         train = load_conversations(train_file, min_examples=5)
         val = load_conversations(val_file, min_examples=2)
@@ -68,11 +68,13 @@ def dataset_splits(name, seed):
 
 def main():
     p = argparse.ArgumentParser(description='Обучение своего NATTER CORE на разговорах')
-    p.add_argument('--dataset', choices=('approved', 'tiny-ru', 'tiny-chat', 'multiturn'), default='approved')
+    p.add_argument('--dataset', choices=('approved', 'tiny-ru', 'tiny-chat', 'multiturn', 'curriculum'), default='approved')
     p.add_argument('--steps', type=int, default=500, help='Дополнительные шаги')
     p.add_argument('--eval-every', type=int, default=100)
+    p.add_argument('--patience', type=int, default=6,
+                   help='Остановить после N последовательных оценок без улучшения')
     args = p.parse_args()
-    if args.steps <= 0 or args.eval_every <= 0:
+    if args.steps <= 0 or args.eval_every <= 0 or args.patience <= 0:
         p.error('--steps и --eval-every должны быть положительными')
 
     cfg = config()
@@ -88,7 +90,7 @@ def main():
         raise RuntimeError('Токенизатор не совпадает с корпусом.')
 
     train_raw, val_raw, data_sha = dataset_splits(args.dataset, seed)
-    encoder = encode_conversations if args.dataset == 'multiturn' else encode_dialogues
+    encoder = encode_conversations if args.dataset in ('multiturn', 'curriculum') else encode_dialogues
     train, bad1 = encoder(train_raw, tok, cfg['model']['context_size'])
     val, bad2 = encoder(val_raw, tok, cfg['model']['context_size'])
     if not train or not val:
@@ -96,7 +98,7 @@ def main():
     print(f'Dataset {args.dataset}: train={len(train):,}, val={len(val):,}, '
           f'пропущено слишком длинных={bad1 + bad2}', flush=True)
     print('Обучение: только ответы; вопрос маскируется в loss.')
-    if args.dataset == 'multiturn' and len(train) < 100:
+    if args.dataset in ('multiturn', 'curriculum') and len(train) < 100:
         print('ПРЕДУПРЕЖДЕНИЕ: менее 100 многотуровых примеров. Это проверка механики,'
               ' не достаточный корпус для появления многошагового мышления.')
     model, arch = make_model(cfg, tok, device)
@@ -106,11 +108,13 @@ def main():
     suffix = {'tiny-ru': 'dialogue_tiny_ru',
               'tiny-chat': 'dialogue_tiny_chat',
               'approved': 'dialogue',
-              'multiturn': 'dialogue_multiturn'}[args.dataset]
+              'multiturn': 'dialogue_multiturn',
+              'curriculum': 'dialogue_curriculum'}[args.dataset]
     last = ROOT / 'checkpoints' / (suffix + '_last.pt')
     best = ROOT / 'checkpoints' / (suffix + '_best.pt')
     step = 0
     best_val = float('inf')
+    bad_evals = 0
     if last.exists():
         ck = load_checkpoint(last, device)
         validate_checkpoint(ck, arch, manifest['tokenizer_sha256'])
@@ -125,6 +129,7 @@ def main():
         if ck.get('scaler_state_dict'):
             scaler.load_state_dict(ck['scaler_state_dict'])
         best_val = float(ck.get('best_val', float('inf')))
+        bad_evals = int(ck.get('bad_evals', 0))
         step = int(ck['step'])
         print(f'Продолжаю диалоговое обучение с шага {step}', flush=True)
     else:
@@ -152,6 +157,7 @@ def main():
             'optimizer_state_dict': optim.state_dict(),
             'scaler_state_dict': scaler.state_dict(),
             'best_val': best_val,
+            'bad_evals': bad_evals,
         })
 
     try:
@@ -173,9 +179,16 @@ def main():
                       f'val {val_loss:.4f} | {time.time()-start_time:.1f}s', flush=True)
                 if val_loss < best_val:
                     best_val = val_loss
+                    bad_evals = 0
                     save(best)
                     print('  Новый лучший диалоговый checkpoint:', best, flush=True)
+                else:
+                    bad_evals += 1
                 save(last)
+                if bad_evals >= args.patience:
+                    print('Ранняя остановка: проверочная ошибка не улучшалась',
+                          f'{args.patience} оценок.', flush=True)
+                    break
     except KeyboardInterrupt:
         print('Остановка пользователем; сохраняю checkpoint.')
     finally:

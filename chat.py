@@ -16,10 +16,11 @@ from natter.tokenizer import NatterTokenizer
 
 
 def select_checkpoint(stage):
-    names = (['dialogue_multiturn_best.pt', 'dialogue_tiny_chat_best.pt', 'dialogue_best.pt', 'dialogue_tiny_ru_best.pt', 'pretrain_best.pt'] if stage == 'auto' else
+    names = (['dialogue_multiturn_best.pt', 'dialogue_curriculum_best.pt', 'dialogue_tiny_chat_best.pt', 'dialogue_best.pt', 'dialogue_tiny_ru_best.pt', 'pretrain_best.pt'] if stage == 'auto' else
              ['pretrain_best.pt'] if stage == 'base' else
              ['dialogue_tiny_chat_best.pt'] if stage == 'tiny-chat' else
              ['dialogue_multiturn_best.pt'] if stage == 'multiturn' else
+             ['dialogue_curriculum_best.pt'] if stage == 'curriculum' else
              ['dialogue_best.pt', 'dialogue_tiny_chat_best.pt', 'dialogue_tiny_ru_best.pt'])
     for name in names:
         path = ROOT / 'checkpoints' / name
@@ -82,7 +83,7 @@ def make_prompt(question, history, memory, library, tokenizer, context, budget, 
 
 def main():
     parser = argparse.ArgumentParser(description='Локальный текстовый чат NATTER CORE')
-    parser.add_argument('--stage', choices=['auto', 'base', 'dialogue', 'tiny-chat', 'multiturn'], default='auto')
+    parser.add_argument('--stage', choices=['auto', 'base', 'dialogue', 'tiny-chat', 'multiturn', 'curriculum'], default='auto')
     parser.add_argument('--tokens', type=int, default=100)
     parser.add_argument('--temperature', type=float, default=0.8)
     parser.add_argument('--top-k', type=int, default=40)
@@ -104,11 +105,13 @@ def main():
     context = model.context_size
     loaded_name = select_checkpoint(args.stage).name
     is_dialogue = loaded_name.startswith('dialogue')
-    is_multiturn = loaded_name.startswith('dialogue_multiturn')
+    is_multiturn = loaded_name.startswith(('dialogue_multiturn', 'dialogue_curriculum'))
     if is_dialogue:
         print('Диалоговая модель: использую формат вопрос-ответ, на котором она обучалась.')
     if is_multiturn:
         print('Многотуровый режим: передаю модели предыдущие 4 реплики, с EOS между ответами.')
+    if loaded_name.startswith('dialogue_curriculum'):
+        print('ВНИМАНИЕ: это экспериментальная модель, обученная на синтетических логических упражнениях.')
     memory, library = Memory(), Library()
     (ROOT / 'logs').mkdir(exist_ok=True)
     logfile = ROOT / 'logs' / f'chat_{datetime.now().strftime("%Y%m%d_%H%M%S")}.jsonl'
