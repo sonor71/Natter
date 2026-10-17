@@ -40,9 +40,12 @@ def select_cases(rows, per_skill: int = 2, seed: int = 42):
 
 def task_check(response: str, case: dict):
     """Heuristic checks; not semantic understanding or human evaluation."""
+    skill = case["skill"]
+    if skill == "philosophy":
+        # Philosophical correctness requires human review, not string matching.
+        return None
     _, a, b, c, name = case_values(case["scenario"])
     response = response.casefold()
-    skill = case["skill"]
     if skill == "chain":
         return b in response and c in response
     if skill == "memory":
@@ -123,20 +126,22 @@ def main():
         )
         output = tok.decode(generated[0, len(prefix):].tolist()).strip()
         match = task_check(output, case)
-        counts[case["skill"]] += 1
-        correct[case["skill"]] += int(match)
+        if match is not None:
+            counts[case["skill"]] += 1
+            correct[case["skill"]] += int(match)
         detailed.append({
             "skill": case["skill"], "scenario": case["scenario"],
             "question": question, "expected": expected,
             "generated": output, "heuristic_match": match, "reference_loss": loss,
         })
-        print(f"\n{case['skill']} | scenario {case['scenario']} | loss {loss:.3f} | check {'PASS' if match else 'FAIL'}")
+        label = "MANUAL REVIEW" if match is None else ("PASS" if match else "FAIL")
+        print(f"\n{case['skill']} | scenario {case['scenario']} | loss {loss:.3f} | check {label}")
         print("Вопрос:", question)
         print("Ожидаемый смысл:", expected)
         print("НАТТЕР:", output)
     passed = sum(correct.values())
     total = sum(counts.values())
-    print(f"\nЭвристические проверки: {passed}/{total}; это НЕ научный тест интеллекта.")
+    print(f"\nЭвристические проверки: {passed}/{total}; это НЕ тест общего интеллекта. Философские ответы оцениваются вручную.")
     for skill in sorted(counts):
         print(f"  {skill}: {correct[skill]}/{counts[skill]}")
     if args.save:
