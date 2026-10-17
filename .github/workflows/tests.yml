@@ -20,6 +20,6 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements.txt
       - name: Compile Python sources
-        run: python -m compileall -q chat.py diagnose.py probe_language.py audit_corpus.py import_dialogues.py train.py train_dialogue.py natter tests
+        run: python -m compileall -q chat.py reason.py diagnose.py probe_language.py audit_corpus.py import_dialogues.py train.py train_dialogue.py natter tests
       - name: Unit tests on tiny randomly initialized model
         run: python -m unittest discover -s tests -v
