@@ -8,6 +8,7 @@ import torch
 from natter.checkpoints import load_checkpoint, make_model, validate_checkpoint
 from natter.corpus import load_manifest
 from natter.library import Library
+from natter.argument_logic import ArgumentSyntaxError, reason
 from natter.memory import Memory
 from natter.settings import ROOT, config, device_name, sha256_file
 from natter.tokenizer import NatterTokenizer
@@ -108,6 +109,7 @@ def main():
     history = []
     last_question = None
     print('Команды: /exit, /fix <правильный ответ>, /remember <факт>,')
+    print(' /logic <посылки через ;> — строгий многошаговый вывод (без модели)')
     print(' /position <тезис> | <аргументы> | <сомнения>, /mem, /find <тема>')
     print('Разговор записывается в:', logfile)
     while True:
@@ -120,6 +122,12 @@ def main():
             continue
         if question in ('/exit', '/quit', 'выход'):
             break
+        if question == '/logic' or question.startswith('/logic '):
+            try:
+                print(reason(question[6:].strip()).render())
+            except ArgumentSyntaxError as exc:
+                print('Ошибка формальной логики:', exc)
+            continue
         if question.startswith('/fix '):
             if last_question is None:
                 print('Сначала задай обычный вопрос.')
