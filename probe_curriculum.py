@@ -80,6 +80,8 @@ def target_loss(model, prefix: list[int], answer_tokens: list[int], device: str)
 
 def main():
     p = argparse.ArgumentParser(description="Оценка нового нейросетевого рассуждения NATTER")
+    p.add_argument("--stage", choices=("base", "curriculum"), default="curriculum",
+                   help="Сравнить те же задания до и после специализированного обучения")
     p.add_argument("--per-skill", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--temperature", type=float, default=0.35)
@@ -95,8 +97,10 @@ def main():
     rows = [json.loads(line) for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
     cases = select_cases(rows, per_skill=args.per_skill, seed=args.seed)
 
-    checkpoint = select_checkpoint("curriculum")
-    model, tok, device = load_brain("curriculum")
+    checkpoint = select_checkpoint(args.stage)
+    model, tok, device = load_brain(args.stage)
+    if args.stage == "base":
+        print("BASELINE: базовые веса не обучались на формате многотуровых задач.")
     print(f"Испытываем: {checkpoint.name}; проверочные сценарии, не вошедшие в train.")
     print("Оценка приблизительная; при плохом русском языке закономерны низкие результаты.")
     correct = defaultdict(int)
